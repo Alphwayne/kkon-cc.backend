@@ -19,6 +19,7 @@ router.post("/check-coverage", async (req, res) => {
     const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`;
     const geoResponse = await axios.get(nominatimUrl, {
       headers: { "User-Agent": "CoverageChecker/1.0" },
+        timeout: 5000, // 5 seconds
     });
 
     if (!geoResponse.data.length) {
@@ -49,9 +50,13 @@ router.post("/check-coverage", async (req, res) => {
 
     return res.json({ coverage: coverageFound, lat, lng: lon });
   } catch (err) {
-    console.error("Error checking coverage:", err.message);
-    return res.status(500).json({ error: "Internal server error" });
+  if (err.code === 'ECONNABORTED') {
+    return res.status(504).json({ error: "Geocoding service timed out" });
   }
+  console.error("Error checking coverage:", err.message);
+  return res.status(500).json({ error: "Internal server error" });
+}
+
 });
 
 module.exports = router;
