@@ -6,57 +6,57 @@ const path = require("path");
 
 const router = express.Router();
 
-const coverageData = JSON.parse(fs.readFileSync(path.join(__dirname, 'coverage.geojson'), 'utf8'));
+// Load GeoJSON coverage data once
+const coveragePath = path.join(__dirname, "../public/coverage.geojson");
+const coverageData = JSON.parse(fs.readFileSync(coveragePath, "utf8"));
 
-router.post("/check-coverage", async (req, res) => {
+// Utility: Normalize strings for loose matching
+const normalize = (s) =>
+  s
+    .toLowerCase()
+    .replace(/\bst\b/g, "street")
+    .replace(/\brd\b/g, "road")
+    .replace(/\bave\b/g, "avenue")
+    .replace(/\bdr\b/g, "drive")
+    .replace(/\bct\b/g, "court")
+    .replace(/\bln\b/g, "lane")
+    .replace(/[^a-z0-9 ]/g, "")
+    .trim();
+
+router.post("/match-streets", (req, res) => {
   const { address } = req.body;
+  if (!address) return res.status(400).json({ error: "Address is required." });
 
-  if (!address) {
-    return res.status(400).json({ error: "Address is required" });
+  const queryNorm = normalize(address);
+  const results = coverageData.features
+    .map((feature, i) => ({
+      id: i,
+      name: feature.properties.name,
+      coordinates: feature.geometry.coordinates,
+      normName: normalize(feature.properties.name),
+    }))
+    .filter((f) => f.normName.includes(queryNorm));
+
+  res.json({ results: results.map(({ id, name, coordinates }) => ({ id, name, coordinates })) });
+});
+
+router.post("/check-coordinates", (req, res) => {
+  const { lat, lng } = req.body;
+  if (lat === undefined || lng === undefined) {
+    return res.status(400).json({ error: "Latitude and longitude required" });
   }
 
-  try {
-    const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`;
-    const geoResponse = await axios.get(nominatimUrl, {
-      headers: { "User-Agent": "CoverageChecker/1.0" },
-        timeout: 5000, // 5 seconds
-    });
+  const point = turf.point([lng, lat]);
 
-    if (!geoResponse.data.length) {
-      return res.status(404).json({ coverage: false, error: "Address not found" });
-    }
+  const match = coverageData.features.find((feature) =>
+    turf.booleanPointInPolygon(point, feature)
+  );
 
-    const { lat, lon } = geoResponse.data[0];
-    const userPoint = turf.point([parseFloat(lon), parseFloat(lat)]);
-
-    let coverageFound = false;
-
-    for (const feature of coverageData.features) {
-      if (feature.geometry.type === "Polygon" || feature.geometry.type === "MultiPolygon") {
-        if (turf.booleanPointInPolygon(userPoint, feature)) {
-          coverageFound = true;
-          break;
-        }
-      } else if (feature.geometry.type === "Point") {
-        const point = turf.point(feature.geometry.coordinates);
-        const distance = turf.distance(userPoint, point, { units: "kilometers" });
-        const threshold = 0.5; // 500 meters
-        if (distance <= threshold) {
-          coverageFound = true;
-          break;
-        }
-      }
-    }
-
-    return res.json({ coverage: coverageFound, lat, lng: lon });
-  } catch (err) {
-  if (err.code === 'ECONNABORTED') {
-    return res.status(504).json({ error: "Geocoding service timed out" });
+  if (match) {
+    return res.json({ coverage: true });
+  } else {
+    return res.json({ coverage: false });
   }
-  console.error("Error checking coverage:", err.message);
-  return res.status(500).json({ error: "Internal server error" });
-}
-
 });
 
 module.exports = router;
